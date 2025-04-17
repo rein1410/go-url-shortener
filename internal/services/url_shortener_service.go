@@ -28,19 +28,7 @@ func NewUrlShortenerService(db *gorm.DB) *UrlShortenerService {
 }
 
 func (this *UrlShortenerService) GenerateUrls(c *gin.Context, body *ShortenRequestBody) ([]*models.Url, error) {
-	size := len(body.Urls)
-	wg := &sync.WaitGroup{}
-	urls := make(chan models.Url, size)
-	wg.Add(size)
-	for _, permalink := range body.Urls {
-		go this.processUrlInternal(urls, wg, permalink)
-	}
-	wg.Wait()
-	close(urls)
-	items := make([]*models.Url, 0, size)
-	for val := range urls {
-		items = append(items, &val)
-	}
+	items := this.processUrlInternal(body.Urls)
 	result := this.db.Create(items)
 	if result.Error != nil {
 		return nil, result.Error
@@ -48,17 +36,32 @@ func (this *UrlShortenerService) GenerateUrls(c *gin.Context, body *ShortenReque
 	return items, nil
 }
 
-func (this *UrlShortenerService) processUrlInternal(c chan models.Url, wg *sync.WaitGroup, p string) {
-	defer wg.Done()
-
-	id := this.generateUniqueID()
-	shortURL := this.encodeBase62(id)
-
-	newUrl := &models.Url{
-		Permalink: p,
-		Hash:      shortURL,
+func (this *UrlShortenerService) processUrlInternal(urls []string) []*models.Url {
+	out := make(chan *models.Url, len(urls))
+	// wg := &sync.WaitGroup{}
+	var wg *sync.WaitGroup
+	wg.Add(len(urls))
+	for _, permalink := range urls {
+		go func(p string) { //imagine is this a heavy computed task
+			defer wg.Done()
+			id := this.generateUniqueID()
+			shortURL := this.encodeBase62(id)
+			newUrl := &models.Url{
+				Permalink: permalink,
+				Hash:      shortURL,
+			}
+			out <- newUrl
+		}(permalink)
 	}
-	c <- *newUrl
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	result := make([]*models.Url, 0, len(urls))
+	for val := range out {
+		result = append(result, val)
+	}
+	return result
 }
 
 func (this *UrlShortenerService) encodeBase62(num int64) string {
